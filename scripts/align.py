@@ -24,10 +24,18 @@ def trading_calendar(prices: pd.DataFrame, start=None, end=None) -> pd.DatetimeI
     return pd.DatetimeIndex(d.to_numpy(), name="date")
 
 
-def session_close_utc(calendar: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    hh, mm = (int(x) for x in C.NYSE_CLOSE.split(":"))
+def _session_clock_utc(calendar: pd.DatetimeIndex, hhmm: str) -> pd.DatetimeIndex:
+    hh, mm = (int(x) for x in hhmm.split(":"))
     local = pd.DatetimeIndex(calendar).tz_localize(None) + pd.Timedelta(hours=hh, minutes=mm)
     return local.tz_localize(C.MARKET_TZ).tz_convert("UTC")
+
+
+def session_close_utc(calendar: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    return _session_clock_utc(calendar, C.NYSE_CLOSE)
+
+
+def session_open_utc(calendar: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    return _session_clock_utc(calendar, C.NYSE_OPEN)
 
 
 def assign_trading_date(pub_time_utc: pd.Series, calendar: pd.DatetimeIndex) -> pd.Series:
@@ -59,6 +67,37 @@ def build_daily(news: pd.DataFrame, prices: pd.DataFrame, calendar: pd.DatetimeI
     texts = article_text(fin).groupby(fin["trading_date"]).agg("\n".join)
     daily["finance_text"] = texts.reindex(calendar).fillna("")
     return daily.reset_index()
+
+
+def overnight_texts(news: pd.DataFrame, calendar: pd.DatetimeIndex, finance_only: bool = True) -> pd.Series:
+    """Headline+abstract of articles in (previous close, this open] — known at the 9:30 open."""
+    src = news[news["is_finance"]] if finance_only and "is_finance" in news.columns else news
+    if src.empty:
+        return pd.Series("", index=calendar, dtype=str)
+    opens = pd.Series(session_open_utc(calendar), index=calendar)
+    td = pd.DatetimeIndex(src["trading_date"])
+    pub = pd.DatetimeIndex(src["pub_time_utc"]).tz_convert("UTC")
+    open_of_day = pd.DatetimeIndex(opens.reindex(td).to_numpy())
+    is_on = np.asarray(pub <= open_of_day)
+    pick = src[is_on]
+    if pick.empty:
+        return pd.Series("", index=calendar, dtype=str)
+    grouped = article_text(pick).groupby(pick["trading_date"]).agg("\n".join)
+    return grouped.reindex(calendar).fillna("")
+
+
+def ensure_overnight_texts(news: pd.DataFrame, calendar: pd.DatetimeIndex) -> pd.Series:
+    """Cached overnight finance blobs, one string per trading day."""
+    path = C.OVERNIGHT_FILE
+    if path.exists():
+        s = pd.read_parquet(path)
+        ser = s.iloc[:, 0]
+        ser.index = pd.DatetimeIndex(s.index)
+        if len(ser) == len(calendar) and ser.index[0] == calendar[0] and ser.index[-1] == calendar[-1]:
+            return ser.reindex(calendar).fillna("")
+    ser = overnight_texts(news, calendar, finance_only=True)
+    ser.rename("text").to_frame().to_parquet(path)
+    return ser
 
 
 def last_complete_price_date(prices: pd.DataFrame) -> pd.Timestamp:

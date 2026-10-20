@@ -30,9 +30,11 @@ PROCESSED_FILES = {
     "daily": PROCESSED_DIR / "daily.parquet",           # one row per trading day: news + S&P 500
     "meta": PROCESSED_DIR / "meta.json",
 }
+EMBED_DIR = PROCESSED_DIR / "embeddings"  # cached raw embeddings (sentence-transformers, …)
+OVERNIGHT_FILE = PROCESSED_DIR / "overnight_finance_text.parquet"
 
 # --------------------------------------------------------------------------- period
-START_DATE = "2000-01-01"
+START_DATE = "1990-01-01"
 END_DATE: str | None = None  # None -> today; news and prices are cut to their common range
 
 # --------------------------------------------------------------------------- news
@@ -101,6 +103,7 @@ FINANCE_KEYWORDS = {
 
 # --------------------------------------------------------------------------- market
 NYSE_CLOSE = "16:00"           # local New York time; news after the close belongs to the next trading day
+NYSE_OPEN = "09:30"            # overnight window is (previous close, this open]
 MARKET_TZ = "America/New_York"
 CALENDAR_TICKER = "^GSPC"      # trading calendar = days on which the S&P 500 has a close
 
@@ -146,4 +149,4 @@ TICKERS: dict[str, dict] = {
 }
 
 # Tickers whose history covers the whole period; used for the "core" NaN-free panel.
-CORE_TICKERS = [t for t, m in TICKERS.items() if int(m["first"][:4]) <= 1999]
+CORE_TICKERS = [t for t, m in TICKERS.items() if int(m["first"][:4]) <= int(START_DATE[:4])]

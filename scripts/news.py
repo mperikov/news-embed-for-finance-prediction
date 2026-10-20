@@ -314,6 +314,51 @@ def _cut(df: pd.DataFrame, lo: pd.Timestamp | None = None, hi: pd.Timestamp | No
     return df[m]
 
 
+def _impute_flags_from_text(fill: pd.DataFrame, base: pd.DataFrame,
+                            base_keep: pd.Series, base_fin: pd.Series):
+    """Predict keep / is_finance for HF rows. Train on nearby labelled Kaggle years.
+
+    Pre-Kaggle years (1990s) use the *first* labelled years; later gaps use the years
+    just before the gap. Discontiguous fills get a separate model each.
+    """
+    from .textflags import fit_and_predict
+
+    labelled_ok = has_text(base)
+    lab_times = base.loc[labelled_ok, "pub_time_utc"]
+    if lab_times.empty:
+        raise RuntimeError("no labelled news to train the text-flag model")
+    kaggle_lo, kaggle_hi = lab_times.min(), lab_times.max()
+    years = pd.DateOffset(years=C.TEXT_MODEL_TRAIN_YEARS)
+
+    chunks: list[tuple[str, pd.DataFrame, pd.Series]] = []
+    pre = fill["pub_time_utc"] < kaggle_lo
+    if pre.any():
+        lab = labelled_ok & (base["pub_time_utc"] >= kaggle_lo) & (base["pub_time_utc"] < kaggle_lo + years)
+        chunks.append(("pre_kaggle", fill[pre], lab))
+    post = ~pre
+    if post.any():
+        train_from = fill.loc[post, "pub_time_utc"].min() - years
+        lab = labelled_ok & (base["pub_time_utc"] >= train_from)
+        chunks.append(("post_kaggle", fill[post], lab))
+
+    keep = pd.Series(False, index=fill.index)
+    fin = pd.Series(False, index=fill.index)
+    info: dict = {}
+    for name, chunk, lab in chunks:
+        if not lab.any():
+            raise RuntimeError(f"empty training window for text flags ({name})")
+        labels = pd.DataFrame({"keep": base_keep, "is_finance": base_fin})[lab]
+        pred, met = fit_and_predict(article_text(base[lab]), labels, article_text(chunk))
+        keep.loc[pred.index] = pred["keep"]
+        fin.loc[pred.index] = pred["is_finance"]
+        t0, t1 = base.loc[lab, "pub_time_utc"].min(), base.loc[lab, "pub_time_utc"].max()
+        met["train_period"] = f"{t0.date()} -> {t1.date()}"
+        met["n_apply"] = int(len(chunk))
+        info[name] = met
+        log.info("text flags %s: train %s, apply %d rows", name, met["train_period"], len(chunk))
+    return keep, fin, info
+
+
 def build_news(start: str = C.START_DATE, end: str | None = C.END_DATE, force: bool = False,
                min_coverage: float = 0.95) -> tuple[pd.DataFrame, pd.Timestamp, dict]:
     """Cleaned article table for [start, end] with `is_finance` and `flag_source` columns.
@@ -382,21 +427,14 @@ def build_news(start: str = C.START_DATE, end: str | None = C.END_DATE, force: b
     # rows without metadata: impute the same flags from text -----------------------------
     if fill is not None and len(fill):
         fill = fill[has_text(fill)].copy()
-        if fill["flag_source"].iloc[0] == "metadata":
+        if len(fill) and fill["flag_source"].iloc[0] == "metadata":
             fill_keep, fill_fin = keep_mask(fill), is_finance(fill)
-        else:
-            from .textflags import fit_and_predict
-
-            # train on the labelled rows of the years just before the fill period (same era, same style)
-            train_from = fill["pub_time_utc"].min() - pd.DateOffset(years=C.TEXT_MODEL_TRAIN_YEARS)
-            labelled = has_text(base) & (base["pub_time_utc"] >= train_from)
-            labels = pd.DataFrame({"keep": base_keep, "is_finance": base_fin})[labelled]
-            pred, info["text_model"] = fit_and_predict(article_text(base[labelled]), labels, article_text(fill))
-            info["text_model"]["train_period"] = f"{train_from.date()} -> {fill['pub_time_utc'].min().date()}"
-            fill_keep, fill_fin = pred["keep"], pred["is_finance"]
-        fill = fill[fill_keep]
-        fill["is_finance"] = fill_fin[fill.index]
-        news = pd.concat([news, fill], ignore_index=True)
+        elif len(fill):
+            fill_keep, fill_fin, info["text_model"] = _impute_flags_from_text(fill, base, base_keep, base_fin)
+        if len(fill):
+            fill = fill[fill_keep]
+            fill["is_finance"] = fill_fin[fill.index]
+            news = pd.concat([news, fill], ignore_index=True)
 
     news = _cut(news, lo=start_ts, hi=min(end_date, reliable_end))
     news = news.drop_duplicates("article_id").sort_values("pub_time_utc", kind="stable").reset_index(drop=True)

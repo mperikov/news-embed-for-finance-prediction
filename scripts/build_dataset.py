@@ -3,7 +3,7 @@
     from scripts.build_dataset import ensure_dataset
     paths = ensure_dataset()            # downloads + builds on first call, no-op afterwards
 
-CLI:  python -m scripts.build_dataset [--force] [--start 2000-01-01] [--end 2025-12-31]
+CLI:  python -m scripts.build_dataset [--force] [--start 1990-01-01] [--end 2025-12-31]
 """
 from __future__ import annotations
 
@@ -39,9 +39,27 @@ def ensure_dataset(force: bool = False, start: str = C.START_DATE, end: str | No
     if verbose:
         _setup_logging()
     if not force and all(p.exists() for p in C.PROCESSED_FILES.values()):
-        log.info("dataset found in %s - reusing (pass force=True to rebuild)", C.PROCESSED_DIR)
-        return dict(C.PROCESSED_FILES)
+        if _processed_covers(start, end):
+            log.info("dataset found in %s - reusing (pass force=True to rebuild)", C.PROCESSED_DIR)
+            return dict(C.PROCESSED_FILES)
+        log.info("processed files exist but do not cover %s -> %s; rebuilding", start, end or "today")
     return build(start=start, end=end, force=force)
+
+
+def _processed_covers(start: str, end: str | None) -> bool:
+    try:
+        meta = json.loads(C.PROCESSED_FILES["meta"].read_text(encoding="utf-8"))
+        have = meta.get("period") or {}
+        if not have.get("start"):
+            return False
+        # first trading day may be a few calendar days after START_DATE (New Year / weekend)
+        if pd.Timestamp(have["start"]) > pd.Timestamp(start) + pd.Timedelta(days=5):
+            return False
+        if end and have.get("end") and pd.Timestamp(have["end"]) < pd.Timestamp(end) - pd.Timedelta(days=14):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def build(start: str = C.START_DATE, end: str | None = C.END_DATE, force: bool = False) -> dict[str, Path]:

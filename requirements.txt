@@ -6,6 +6,7 @@ kagglehub>=0.3
 huggingface_hub>=0.25
 yfinance>=0.2.50
 scikit-learn>=1.4
+scipy>=1.11
 python-dotenv>=1.0
 matplotlib>=3.8
 jupyter

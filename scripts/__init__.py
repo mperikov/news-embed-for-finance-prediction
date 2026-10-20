@@ -7,4 +7,6 @@ news           NYT article metadata (Kaggle mirror of the NYT Archive API + opti
 market         daily prices from Yahoo Finance (yfinance)
 align          trading calendar, news -> trading-day assignment, aligned daily table
 build_dataset  `ensure_dataset()` entry point used by the notebook, and a CLI
+embed          daily news embeddings ε_t + train-only PCA to dimension d
+ou             discrete OU (scalar / diag / full A), observation y_t ≈ g0 + ⟨g, x_t⟩, synthetic checks
 """

@@ -28,6 +28,14 @@ def _is_fresh(path: Path, max_age_days: int = 1) -> bool:
     return path.exists() and (time.time() - path.stat().st_mtime) < max_age_days * 86400
 
 
+def _cache_covers(df: pd.DataFrame, ticker: str, start: str) -> bool:
+    """True if the cached history reaches back to max(requested start, ticker birth)."""
+    first = C.TICKERS.get(ticker, {}).get("first", "1900")
+    first_ts = pd.Timestamp(first if len(str(first)) >= 8 else f"{first}-01-01")
+    want = max(pd.Timestamp(start), first_ts)
+    return pd.Timestamp(df["date"].min()) <= want + pd.Timedelta(days=60)
+
+
 def download_ticker(ticker: str, start: str, end: str | None = None, retries: int = 3) -> pd.DataFrame:
     """Full daily history of one ticker as a tidy frame with PRICE_COLUMNS."""
     import yfinance as yf
@@ -71,8 +79,9 @@ def build_market(start: str = C.START_DATE, end: str | None = C.END_DATE,
     frames: list[pd.DataFrame] = []
     for ticker in tickers:
         path = _cache_path(ticker)
-        if _is_fresh(path) and not force:
-            df = pd.read_parquet(path)
+        df = pd.read_parquet(path) if path.exists() else None
+        if df is not None and _is_fresh(path) and not force and _cache_covers(df, ticker, start):
+            pass
         else:
             try:
                 df = download_ticker(ticker, start, end)
